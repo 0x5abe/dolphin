@@ -32,6 +32,7 @@ using std::isnan;
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
+#include "Core/Host.h"
 
 template <typename T>
 static T HostRead(const Core::CPUThreadGuard& guard, u32 address);
@@ -186,7 +187,77 @@ static double StreqFunc(expr_func* f, vec_expr_t* args, void* c)
   return strs[0] == strs[1];
 }
 
-static std::array<expr_func, 23> g_expr_funcs{{
+// TODO: Refactor to not reuse as much code from MemoryViewWidget::ToggleBreakpoint (both could use a common function)
+static double MemCheckFunc(expr_func* f, vec_expr_t* args, void* c)
+{
+  if (vec_len(args) <= 0)
+    return 0;
+
+  const u32 address = static_cast<u32>(expr_eval(&vec_nth(args, 0)));
+  u32 length = 1;
+  std::string bp_type = "rw";
+  bool do_log = true;
+  if (vec_len(args) > 1)
+  {
+    length = static_cast<u32>(expr_eval(&vec_nth(args, 1)));
+    if (vec_len(args) > 2)
+    {
+      const char* bp_type_cstr = expr_get_str(&vec_nth(args, 2));
+      if (bp_type_cstr == nullptr)
+      {
+        return 0;
+      }
+      bp_type = std::string(bp_type_cstr);
+      if (vec_len(args) > 3)
+      {
+        do_log = static_cast<bool>(expr_eval(&vec_nth(args, 3)));
+      }
+    }
+  }
+
+  auto& system = Core::System::GetInstance();
+  auto& memchecks = system.GetPowerPC().GetMemChecks();
+
+  double result = 0;
+
+  {
+    const Core::CPUThreadGuard guard(system);
+
+    TMemCheck* check_ptr = memchecks.GetMemCheck(address, length);
+
+    if (check_ptr == nullptr)
+    {
+      TMemCheck check;
+      check.start_address = address;
+      check.end_address = check.start_address + length - 1;
+      check.is_ranged = length > 0;
+      check.is_break_on_read = bp_type == "rw" || bp_type == "r";
+      check.is_break_on_write = bp_type == "rw" || bp_type == "w";
+      check.log_on_hit = do_log;
+      check.break_on_hit = true;
+      if (vec_len(args) > 4)
+      {
+        check.condition = Expression::TryParse(expr_get_str(&vec_nth(args, 4)));
+      }
+
+      memchecks.Add(std::move(check), false);
+      result = 1;
+    }
+    else if (check_ptr != nullptr)
+    {
+      // Using the pointer fixes misaligned breakpoints (0x11 breakpoint in 0x10 aligned view).
+      memchecks.Remove(check_ptr->start_address, false);
+    }
+
+    memchecks.ScheduleUpdate();
+  }
+
+  Host_PPCBreakpointsChanged();
+
+  return result;
+}
+
+static std::array<expr_func, 24> g_expr_funcs{{
     // For internal storage and comparisons, everything is auto-converted to Double.
     // If u64 ints are added, this could produce incorrect results.
     {"read_u8", HostReadFunc<u8>},
@@ -210,6 +281,7 @@ static std::array<expr_func, 23> g_expr_funcs{{
     {"s32", CastFunc<s32, u32>},
     {"callstack", CallstackFunc},
     {"streq", StreqFunc},
+    {"memcheck", MemCheckFunc},
     {},
 }};
 

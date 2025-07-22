@@ -16,6 +16,11 @@ namespace Core
 class System;
 }
 
+namespace CoreTiming
+{
+struct EventType;
+}
+
 struct TBreakPoint
 {
   u32 address = 0;
@@ -108,6 +113,8 @@ public:
   MemChecks& operator=(MemChecks&& other) = delete;
   ~MemChecks();
 
+  void Init();
+
   using TMemChecks = std::vector<TMemCheck>;
   using TMemChecksStr = std::vector<std::string>;
 
@@ -124,6 +131,8 @@ public:
   bool Remove(u32 address, bool update = true);
 
   void Update();
+  static void ScheduledUpdate(Core::System& system, u64 userdata, s64 cyclesLate);
+  void ScheduleUpdate();
   void Clear();
   bool HasAny() const { return !m_mem_checks.empty(); }
 
@@ -131,4 +140,5 @@ private:
   TMemChecks m_mem_checks;
   Core::System& m_system;
   bool m_mem_breakpoints_set = false;
+  CoreTiming::EventType* m_event_type_memcheck_update = nullptr;
 };

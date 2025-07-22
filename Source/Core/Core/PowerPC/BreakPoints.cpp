@@ -19,6 +19,7 @@
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
+#include "Core/CoreTiming.h"
 
 BreakPoints::BreakPoints(Core::System& system) : m_system(system)
 {
@@ -222,6 +223,11 @@ MemChecks::MemChecks(Core::System& system) : m_system(system)
 
 MemChecks::~MemChecks() = default;
 
+void MemChecks::Init()
+{
+  m_event_type_memcheck_update = m_system.GetCoreTiming().RegisterEvent("MemCheckUpdate", ScheduledUpdate);
+}
+
 MemChecks::TMemChecksStr MemChecks::GetStrings() const
 {
   TMemChecksStr mc_strings;
@@ -354,6 +360,16 @@ void MemChecks::Update()
   }
 
   m_system.GetMMU().DBATUpdated();
+}
+
+void MemChecks::ScheduledUpdate(Core::System& system, u64 userdata, s64 cyclesLate)
+{
+  system.GetPowerPC().GetMemChecks().Update();
+}
+
+void MemChecks::ScheduleUpdate()
+{
+  m_system.GetCoreTiming().ScheduleEvent(0, m_event_type_memcheck_update);
 }
 
 TMemCheck* MemChecks::GetMemCheck(u32 address, size_t size)

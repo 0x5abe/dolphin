@@ -271,6 +271,8 @@ void PowerPCManager::Init(CPUCore cpu_core)
   auto& memory = m_system.GetMemory();
   m_ppc_state.iCache.Init(memory);
   m_ppc_state.dCache.Init(memory);
+
+  m_memchecks.Init();
 }
 
 void PowerPCManager::Reset()
