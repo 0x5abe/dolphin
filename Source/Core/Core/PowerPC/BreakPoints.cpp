@@ -290,7 +290,7 @@ void MemChecks::AddFromStrings(const TMemChecksStr& mc_strings)
   }
 }
 
-DelayedMemCheckUpdate MemChecks::Add(TMemCheck memory_check)
+DelayedMemCheckUpdate MemChecks::Add(TMemCheck memory_check, bool do_update)
 {
   const Core::CPUThreadGuard guard(m_system);
 
@@ -308,8 +308,7 @@ DelayedMemCheckUpdate MemChecks::Add(TMemCheck memory_check)
   {
     m_mem_checks.emplace_back(std::move(memory_check));
   }
-
-  return DelayedMemCheckUpdate(this, true);
+  return DelayedMemCheckUpdate(this, do_update);
 }
 
 bool MemChecks::ToggleEnable(u32 address)
@@ -323,7 +322,7 @@ bool MemChecks::ToggleEnable(u32 address)
   return true;
 }
 
-DelayedMemCheckUpdate MemChecks::Remove(u32 address)
+DelayedMemCheckUpdate MemChecks::Remove(u32 address, bool do_update)
 {
   const auto iter = std::ranges::find(m_mem_checks, address, &TMemCheck::start_address);
 
@@ -333,7 +332,7 @@ DelayedMemCheckUpdate MemChecks::Remove(u32 address)
   const Core::CPUThreadGuard guard(m_system);
   m_mem_checks.erase(iter);
 
-  return DelayedMemCheckUpdate(this, true);
+  return DelayedMemCheckUpdate(this, do_update);
 }
 
 void MemChecks::Clear()

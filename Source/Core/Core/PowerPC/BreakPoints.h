@@ -124,13 +124,13 @@ public:
   TMemChecksStr GetStrings() const;
   void AddFromStrings(const TMemChecksStr& mc_strings);
 
-  DelayedMemCheckUpdate Add(TMemCheck memory_check);
+  DelayedMemCheckUpdate Add(TMemCheck memory_check, bool do_update = true);
 
   bool ToggleEnable(u32 address);
 
   TMemCheck* GetMemCheck(u32 address, size_t size = 1);
   bool OverlapsMemcheck(u32 address, u32 length) const;
-  DelayedMemCheckUpdate Remove(u32 address);
+  DelayedMemCheckUpdate Remove(u32 address, bool do_update = true);
 
   void Update();
   static void ScheduledUpdate(Core::System& system, u64 userdata, s64 cyclesLate);
