@@ -13,6 +13,7 @@
 
 #include <fmt/format.h>
 
+#include "Common/BitUtils.h"
 #include "Common/ChunkFile.h"
 #include "Common/Network.h"
 #include "Common/StringUtil.h"
@@ -26,24 +27,6 @@
 #include "Core/System.h"
 
 #include "VideoCommon/OnScreenDisplay.h"
-
-namespace
-{
-template <u16 Opcode, typename CommandType>
-struct HCICommandPayload
-{
-  hci_cmd_hdr_t header{Opcode, sizeof(CommandType)};
-  CommandType command{};
-};
-
-template <typename T>
-requires(std::is_trivially_copyable_v<T>)
-constexpr auto AsU8Span(const T& obj)
-{
-  return std::span{reinterpret_cast<const u8*>(std::addressof(obj)), sizeof(obj)};
-}
-
-}  // namespace
 
 namespace IOS::HLE
 {
@@ -121,6 +104,17 @@ std::optional<IPCReply> BluetoothRealDevice::IOCtlV(const IOCtlVRequest& request
       const auto payload = memory.GetSpanForAddress(cmd->data_address).first(cmd->length);
       m_lib_usb_bt_adapter->ScheduleControlTransfer(cmd->request_type, cmd->request, cmd->value,
                                                     cmd->index, payload, GetTargetTime());
+
+      if (opcode == HCI_CMD_RESET)
+      {
+        // After the console issues HCI reset is a good place to restore our link keys.
+        //  We need to do this because:
+        // Some adapters apparently incorrectly delete keys on HCI reset.
+        // The adapter was potentially being controlled by the host OS bluetooth stack
+        //  or a Dolphin instance with different link keys.
+        SendHCIDeleteLinkKeyCommand();
+        SendHCIStoreLinkKeyCommand();
+      }
     }
     return IPCReply{cmd->length};
   }
@@ -262,11 +256,6 @@ auto BluetoothRealDevice::ProcessHCIEvent(BufferType buffer) -> BufferType
 
       std::memcpy(buffer.data() + sizeof(hci_event_hdr_t) + sizeof(ev), &reply, sizeof(reply));
     }
-    else if (ev.opcode == HCI_CMD_RESET)
-    {
-      SendHCIDeleteLinkKeyCommand();
-      SendHCIStoreLinkKeyCommand();
-    }
   }
   else if (event == HCI_EVENT_CON_COMPL)
   {
@@ -289,7 +278,7 @@ auto BluetoothRealDevice::ProcessHCIEvent(BufferType buffer) -> BufferType
     payload.command.latency = 10000;
     payload.command.delay_variation = 0xffffffff;
 
-    m_lib_usb_bt_adapter->SendControlTransfer(AsU8Span(payload));
+    m_lib_usb_bt_adapter->SendControlTransfer(Common::AsU8Span(payload));
   }
   else if (event == HCI_EVENT_QOS_SETUP_COMPL)
   {
@@ -396,7 +385,7 @@ void BluetoothRealDevice::TriggerSyncButtonHeldEvent()
 void BluetoothRealDevice::SendHCIResetCommand()
 {
   INFO_LOG_FMT(IOS_WIIMOTE, "SendHCIResetCommand");
-  m_lib_usb_bt_adapter->SendControlTransfer(AsU8Span(hci_cmd_hdr_t{HCI_CMD_RESET, 0}));
+  m_lib_usb_bt_adapter->SendControlTransfer(Common::AsU8Span(hci_cmd_hdr_t{HCI_CMD_RESET, 0}));
 }
 
 void BluetoothRealDevice::SendHCIDeleteLinkKeyCommand()
@@ -407,7 +396,7 @@ void BluetoothRealDevice::SendHCIDeleteLinkKeyCommand()
   payload.command.bdaddr = {};
   payload.command.delete_all = 0x01;
 
-  m_lib_usb_bt_adapter->SendControlTransfer(AsU8Span(payload));
+  m_lib_usb_bt_adapter->SendControlTransfer(Common::AsU8Span(payload));
 }
 
 bool BluetoothRealDevice::SendHCIStoreLinkKeyCommand()
@@ -444,7 +433,7 @@ bool BluetoothRealDevice::SendHCIStoreLinkKeyCommand()
   for (auto& [bdaddr, linkkey] : m_link_keys | std::views::take(num_link_keys))
     payload.link_keys[index++] = {bdaddr, linkkey};
 
-  m_lib_usb_bt_adapter->SendControlTransfer(AsU8Span(payload).first(payload_size));
+  m_lib_usb_bt_adapter->SendControlTransfer(Common::AsU8Span(payload).first(payload_size));
   return true;
 }
 
