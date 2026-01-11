@@ -70,6 +70,8 @@ add_library(core
   Debugger/Debugger_SymbolMap.h
   Debugger/Dump.cpp
   Debugger/Dump.h
+  Debugger/FunctionWatch.cpp
+  Debugger/FunctionWatch.h
   Debugger/GCELF.h
   Debugger/OSThread.cpp
   Debugger/OSThread.h

@@ -63,7 +63,8 @@ struct Symbol
   u32 address = 0;
   u32 flags = 0;
   u32 size = 0;
-  int num_calls = 0;
+  u32 num_calls = 0;
+  u32 num_calls_this_frame = 0;
   Type type = Type::Function;
   int index = 0;  // only used for coloring the disasm view
   bool analyzed = false;

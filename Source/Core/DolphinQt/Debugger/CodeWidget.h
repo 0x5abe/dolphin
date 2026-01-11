@@ -44,6 +44,8 @@ public:
   void SetPC();
 
   void OnBranchWatchDialog();
+  void OnFunctionWatchDialog();
+  void OnFWclr();
   void OnSetCodeAddress(u32 address);
   void ToggleBreakpoint();
   void AddBreakpoint();
@@ -83,6 +85,8 @@ private:
   QLineEdit* m_search_address;
   QToolButton* m_lock_btn;
   QPushButton* m_branch_watch;
+  QPushButton* m_function_watch;
+  QPushButton* m_fw_clr;
 
   QLineEdit* m_search_callstack;
   QListWidget* m_callstack_list;

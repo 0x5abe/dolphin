@@ -23,6 +23,7 @@
 #include <QWidget>
 
 #include "Common/Event.h"
+#include "Common/Logging/Log.h"
 #include "Core/Core.h"
 #include "Core/Debugger/Debugger_SymbolMap.h"
 #include "Core/HW/CPU.h"
@@ -118,10 +119,14 @@ void CodeWidget::CreateWidgets()
   m_lock_btn->setMinimumSize(24, 24);
   m_lock_btn->setToolTip(tr("When enabled, prevents automatic updates to the code view."));
   m_branch_watch = new QPushButton(tr("Branch Watch"));
+  m_function_watch = new QPushButton(tr("Framewise Function Watch"));
+  m_fw_clr = new QPushButton(tr("Clear Magma Functions"));
 
   top_layout->addWidget(m_search_address);
   top_layout->addWidget(m_lock_btn);
   top_layout->addWidget(m_branch_watch);
+  top_layout->addWidget(m_function_watch);
+  top_layout->addWidget(m_fw_clr);
 
   auto* right_layout = new QVBoxLayout;
   m_code_view = new CodeViewWidget;
@@ -214,6 +219,8 @@ void CodeWidget::ConnectWidgets()
   connect(m_search_callstack, &QLineEdit::textChanged, this, &CodeWidget::UpdateCallstack);
 
   connect(m_branch_watch, &QPushButton::clicked, this, &CodeWidget::OnBranchWatchDialog);
+  connect(m_function_watch, &QPushButton::pressed, this, &CodeWidget::OnFunctionWatchDialog);
+  connect(m_fw_clr, &QPushButton::pressed, this, &CodeWidget::OnFWclr);
   connect(m_note_list, &QListWidget::itemPressed, this, &CodeWidget::OnSelectNote);
   connect(m_symbols_list, &QListWidget::itemPressed, this, &CodeWidget::OnSelectSymbol);
   connect(m_callstack_list, &QListWidget::itemPressed, this, &CodeWidget::OnSelectCallstack);
@@ -229,6 +236,25 @@ void CodeWidget::ConnectWidgets()
           &CodeWidget::RequestPPCComparison);
   connect(m_code_view, &CodeViewWidget::ShowMemory, this, &CodeWidget::ShowMemory);
   connect(m_code_view, &CodeViewWidget::ActivateSearch, this, &CodeWidget::ActivateSearchAddress);
+}
+
+void CodeWidget::OnFunctionWatchDialog()
+{
+  auto& fwfw = m_system.GetPowerPC().GetFunctionWatch();
+  if (fwfw.Enabled())
+  {
+    fwfw.Dump(m_system);
+  }
+  else
+  {
+    fwfw.Enable(m_system);
+  }
+}
+
+void CodeWidget::OnFWclr()
+{
+  auto& fwfw = m_system.GetPowerPC().GetFunctionWatch();
+  NOTICE_LOG_FMT(POWERPC, "there aer {} magma fns", fwfw.MagmaCount());
 }
 
 void CodeWidget::OnBranchWatchDialog()

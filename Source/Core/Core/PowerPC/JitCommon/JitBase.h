@@ -18,6 +18,7 @@
 #include "Common/x64Emitter.h"
 #include "Core/CPUThreadConfigCallback.h"
 #include "Core/ConfigManager.h"
+#include "Core/Debugger/FunctionWatch.h"
 #include "Core/MachineContext.h"
 #include "Core/PowerPC/CPUCoreBase.h"
 #include "Core/PowerPC/JitCommon/JitAsmCommon.h"
@@ -198,6 +199,7 @@ public:
   ~JitBase() override;
 
   bool IsProfilingEnabled() const { return m_enable_profiling; }
+  bool IsFuncWatchEnabled() const { return m_function_watch.Enabled(); }
   bool IsDebuggingEnabled() const { return m_enable_debugging; }
 
   static const u8* Dispatch(JitBase& jit);
@@ -229,6 +231,7 @@ public:
   PowerPC::PowerPCState& m_ppc_state;
   PowerPC::MMU& m_mmu;
   Core::BranchWatch& m_branch_watch;
+  Core::FunctionWatch& m_function_watch;
   PPCSymbolDB& m_ppc_symbol_db;
 };
 

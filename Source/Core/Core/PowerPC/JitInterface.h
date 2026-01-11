@@ -47,6 +47,7 @@ public:
 
   void UpdateMembase();
   void JitBlockLogDump(const Core::CPUThreadGuard& guard, std::FILE* file) const;
+  void FuncWatchDump(const Core::CPUThreadGuard& guard, std::FILE* file) const;
   void WipeBlockProfilingData(const Core::CPUThreadGuard& guard);
   void RunOnBlocks(const Core::CPUThreadGuard& guard, std::function<void(const JitBlock&)> f) const;
   std::size_t GetBlockCount() const;

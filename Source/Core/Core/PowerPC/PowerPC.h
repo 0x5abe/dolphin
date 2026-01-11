@@ -14,6 +14,7 @@
 
 #include "Core/CPUThreadConfigCallback.h"
 #include "Core/Debugger/BranchWatch.h"
+#include "Core/Debugger/FunctionWatch.h"
 #include "Core/Debugger/PPCDebugInterface.h"
 #include "Core/PowerPC/BreakPoints.h"
 #include "Core/PowerPC/ConditionRegister.h"
@@ -302,6 +303,8 @@ public:
   const PPCSymbolDB& GetSymbolDB() const { return m_symbol_db; }
   Core::BranchWatch& GetBranchWatch() { return m_branch_watch; }
   const Core::BranchWatch& GetBranchWatch() const { return m_branch_watch; }
+  Core::FunctionWatch& GetFunctionWatch() { return m_function_watch; }
+  const Core::FunctionWatch& GetFunctionWatch() const { return m_function_watch; }
 
 private:
   void InitializeCPUCore(CPUCore cpu_core);
@@ -320,6 +323,7 @@ private:
   PPCSymbolDB m_symbol_db;
   PPCDebugInterface m_debug_interface;
   Core::BranchWatch m_branch_watch;
+  Core::FunctionWatch m_function_watch;
 
   CPUThreadConfigCallback::ConfigChangedCallbackID m_registered_config_callback_id;
 

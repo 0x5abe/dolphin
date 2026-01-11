@@ -24,6 +24,7 @@
 #include "Common/Logging/Log.h"
 #include "Common/StringUtil.h"
 #include "Common/Swap.h"
+#include "Common/SymbolDB.h"
 #include "Common/x64ABI.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
@@ -974,6 +975,35 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
     if (i == (code_block.m_num_instructions - 1))
     {
       js.isLastInstruction = true;
+    }
+
+    // Conditionally insert function-tracing code for the Framewise Function Watch Tool
+    if (IsFuncWatchEnabled())
+    {
+      auto& ppc_symbol_db = m_system.GetPPCSymbolDB();
+      if (!ppc_symbol_db.IsEmpty())
+      {
+        const Common::Symbol* functionSymbol = ppc_symbol_db.GetSymbolFromAddr(op.address);
+        // whether this instruction is at the start address of a function
+        bool isFunctionStart = functionSymbol && functionSymbol->address == op.address;
+        if (isFunctionStart && !m_function_watch.IsMagma(op.address))
+        {
+          Core::FunctionWatch::n_tracing++;
+          // the PPCSymbolDB has a stable spot in memory right? i suppose if it gets moved somwhoe
+          // it might break this I think its contents are in danger of being reallocated at a new
+          // memory address if you add symbols. But at long as you don't change what symbols are in
+          // there, it should be stable this asm should perform
+          // `functionSymbol.num_calls_this_frame++;`
+          MOV(64, R(RSCRATCH), ImmPtr(&functionSymbol->num_calls_this_frame));
+          ADD(32, MatR(RSCRATCH), Imm32(1));
+        }
+      }
+      else
+      {
+        NOTICE_LOG_FMT(POWERPC,
+                       "empty ppcsymbolDB!!! for jitblock @ 0x{:x} must generate symbols first!!!",
+                       b->effectiveAddress);
+      }
     }
 
     if (i != 0)
