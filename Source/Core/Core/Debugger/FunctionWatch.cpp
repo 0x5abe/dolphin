@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
+#include <picojson.h>
 #include "Common/Logging/Log.h"
 #include "Core/Core.h"
 #include "Core/PowerPC/JitInterface.h"
@@ -103,63 +104,123 @@ constexpr u32 LIBGC_END = 0x80220548;
 constexpr u32 ENGINE_BEGIN = 0x80220548;
 constexpr u32 ENGINE_END = 0x803125F4;
 
+
+struct FuzzyInfo
+{
+  bool has_value;  // true if fuzzy_match_percent exists
+  double percent;  // valid only if has_value == true
+};
+
+static std::unordered_map<u32, FuzzyInfo> LoadFuzzyReport(const std::string& path)
+{
+  std::unordered_map<u32, FuzzyInfo> out;
+
+  std::ifstream in(path);
+  if (!in)
+    return out;  // missing report.json => treat all as "not attempted"
+
+  picojson::value v;
+  in >> v;
+  if (!v.is<picojson::object>())
+    return out;
+
+  const auto& root = v.get<picojson::object>();
+  auto units_it = root.find("units");
+  if (units_it == root.end() || !units_it->second.is<picojson::array>())
+    return out;
+
+  for (const auto& unit_val : units_it->second.get<picojson::array>())
+  {
+    if (!unit_val.is<picojson::object>())
+      continue;
+
+    const auto& unit = unit_val.get<picojson::object>();
+    auto funcs_it = unit.find("functions");
+    if (funcs_it == unit.end() || !funcs_it->second.is<picojson::array>())
+      continue;
+
+    for (const auto& fn_val : funcs_it->second.get<picojson::array>())
+    {
+      if (!fn_val.is<picojson::object>())
+        continue;
+
+      const auto& fn = fn_val.get<picojson::object>();
+
+      // --- virtual_address (required) ---
+      auto meta_it = fn.find("metadata");
+      if (meta_it == fn.end() || !meta_it->second.is<picojson::object>())
+        continue;
+
+      const auto& meta = meta_it->second.get<picojson::object>();
+      auto va_it = meta.find("virtual_address");
+      if (va_it == meta.end())
+        continue;
+
+      u32 addr = 0;
+      if (va_it->second.is<std::string>())
+        addr = static_cast<u32>(std::stoul(va_it->second.get<std::string>(), nullptr, 10));
+      else if (va_it->second.is<double>())
+        addr = static_cast<u32>(va_it->second.get<double>());
+      else
+        continue;
+
+      // --- fuzzy_match_percent (optional) ---
+      FuzzyInfo fi{};
+      auto fuzzy_it = fn.find("fuzzy_match_percent");
+      if (fuzzy_it != fn.end() && fuzzy_it->second.is<double>())
+      {
+        fi.has_value = true;
+        fi.percent = fuzzy_it->second.get<double>();
+      }
+
+      out[addr] = fi;
+    }
+  }
+
+  return out;
+}
+
+static bool ShouldShowFunction(u32 addr, const std::unordered_map<u32, FuzzyInfo>& fuzzy,
+                               double threshold)
+{
+  // threshold == 0 => show everything
+  if (threshold <= 0.0)
+    return true;
+
+  auto it = fuzzy.find(addr);
+
+  // No fuzzy_match_percent => NOT attempted => ALWAYS show
+  if (it == fuzzy.end() || !it->second.has_value)
+    return true;
+
+  // Has fuzzy_match_percent => show ONLY if below threshold
+  return it->second.percent < threshold;
+}
+
 void FunctionWatch::Dump(const Core::System& system)
 {
-
-  //// this is probably a terrible way to serialize :/
-  //// this code can break and segfault easily, however, i do not care! :)
-  //// btw u are assumed to be using little endian
-  //// this should prolly use some vecctor or other stl dynalloc shiz 
-  //// but idc i just wanna get this data serialized and outta here so i dont have to use cpp anymore
-  //size_t buffer_size = 0;
-
-  //for (const auto& [addr, frameMap] : m_heatmap)
-  //{
-  //  buffer_size += frameMap.size() * (sizeof(framenum_t) + sizeof(hit_count_t));
-  //  buffer_size += sizeof(addr_t) + sizeof(u32);
-  //}
-
-  //buffer_size += 4 * sizeof(u32);
-  //constexpr const char header[32] = "idk how to serialize things";
-  //buffer_size += sizeof(header);
-
-  //u32* buffer = (u32*) malloc(buffer_size);
-  //size_t write_head = 0;
-  //memcpy(buffer, header, sizeof(header));
-  //write_head += 8;
-  //buffer[write_head] = (u32) m_heatmap.size(); write_head++;
-  //for (const auto& [addr, frameMap] : m_heatmap) {
-  //  buffer[write_head] = addr; write_head++;
-  //  buffer[write_head] = (u32) frameMap.size(); write_head++;
-  //  for (const auto& [framenum, heat] : frameMap) {
-  //    buffer[write_head] = framenum; write_head++;
-  //    buffer[write_head] = heat; write_head++;
-  //  }
-  //}
-
-  //// ~~12 bytes short!~~ scratch that LOTS of KILObytes short LOL
-  //NOTICE_LOG_FMT(POWERPC, "Exporting FWFW data. buffer_size: {}, final write_head: {}", buffer_size, write_head);
-
-  //std::ofstream outFile("funcs.bin", std::ios::binary);
-  //if (!outFile) {
-  //  ERROR_LOG_FMT(POWERPC, "Error opening file for writing.\n");
-  //}
-  //outFile.write((char*) buffer, buffer_size);
-  //outFile.close();
-  //NOTICE_LOG_FMT(POWERPC, "Data written successfully.\n");
-  //free(buffer);
-
   PPCSymbolDB& symbol_db = system.GetPPCSymbolDB();
 
-  // Address ranges — EXACTLY from OnFrameEnd
+  // ----------------------------
+  // CONFIG
+  // ----------------------------
+  const double FUZZY_THRESHOLD = 95.0;         // 0 = show everything
+  const bool SORT_UNDER_FILE_BY_FUZZY = false;  // toggle here
+
+  // ----------------------------
+  // Load fuzzy report
+  // ----------------------------
+  const auto fuzzy = LoadFuzzyReport(".\\report.json");
 
   struct Entry
   {
     addr_t addr;
-    std::string name;  // demangled
-    std::string file;  // cpp file
+    std::string name;
+    std::string file;
     std::size_t n_frames;
     std::size_t total_heat;
+    bool has_fuzzy;
+    double fuzzy;  // valid iff has_fuzzy
   };
 
   struct Table
@@ -176,30 +237,42 @@ void FunctionWatch::Dump(const Core::System& system)
       {"Rat", RAT_BEGIN, RAT_END, {}},
   };
 
-  auto mappings = LoadSplits(".\\splits.txt"); // Put splits.txt in the same folder
+  auto mappings = LoadSplits(".\\splits.txt");
 
+  // ----------------------------
+  // Collect + filter
+  // ----------------------------
   for (const auto& [addr, frameMap] : m_heatmap)
   {
     auto* symbol = symbol_db.GetSymbolFromAddr(addr);
     if (!symbol)
       continue;
 
-    const std::string* file = FindFileForAddress(addr, mappings);
+    if (!ShouldShowFunction(addr, fuzzy, FUZZY_THRESHOLD))
+      continue;
+
+    const std::string* cpp_file = FindFileForAddress(addr, mappings);
 
     std::string demangled = demangler::Demangler::Demangle(symbol->function_name);
-
-    // Fallback for autogenerated sinit-style symbols
     if (demangled == "int::")
-    {
       demangled = symbol->function_name;
+
+    bool has_fuzzy = false;
+    double fuzzy_val = 0.0;
+    if (auto it = fuzzy.find(addr); it != fuzzy.end() && it->second.has_value)
+    {
+      has_fuzzy = true;
+      fuzzy_val = it->second.percent;
     }
 
     Entry e{
         addr,
         demangled,
-        file ? *file : "<unknown>",
+        cpp_file ? *cpp_file : "<unknown>",
         frameMap.size(),
         static_cast<std::size_t>(symbol->num_calls),
+        has_fuzzy,
+        fuzzy_val,
     };
 
     for (auto& table : tables)
@@ -212,12 +285,10 @@ void FunctionWatch::Dump(const Core::System& system)
     }
   }
 
-  auto* file = std::fopen(
-      ".\\funcs.tsv", "w");
-
-  if (!file)
+  FILE* out = std::fopen(".\\funcs.tsv", "w");
+  if (!out)
   {
-    ERROR_LOG_FMT(POWERPC, "Error opening funcs.tsv for writing.\n");
+    ERROR_LOG_FMT(POWERPC, "Error opening funcs.tsv for writing.");
     return;
   }
 
@@ -227,6 +298,9 @@ void FunctionWatch::Dump(const Core::System& system)
   constexpr int HEAT_W = 14;
   constexpr int FILE_W = 45;
 
+  // ----------------------------
+  // Emit
+  // ----------------------------
   for (auto& table : tables)
   {
     if (table.entries.empty())
@@ -235,22 +309,21 @@ void FunctionWatch::Dump(const Core::System& system)
     std::sort(table.entries.begin(), table.entries.end(), [](const Entry& a, const Entry& b) {
       if (a.total_heat != b.total_heat)
         return a.total_heat > b.total_heat;
-
       return a.name < b.name;
     });
 
-    fmt::print(file, "\n{} - {} total functions\n", table.title, table.entries.size());
-    fmt::print(file, "{}\n", std::string(80, '='));
+    fmt::print(out, "\n{} - {} total functions\n", table.title, table.entries.size());
+    fmt::print(out, "{}\n", std::string(80, '='));
 
-    fmt::print(file, "{:<12} {:<99} {:>10} {:>14} {:<45}\n", "addr", "func_name", "n_frames",
+    fmt::print(out, "{:<12} {:<99} {:>10} {:>14} {:<45}\n", "addr", "func_name", "n_frames",
                "total_heat", "file");
 
-    fmt::print(file, "{}\n",
+    fmt::print(out, "{}\n",
                std::string(ADDR_W + 1 + NAME_W + 1 + FRAMES_W + 1 + HEAT_W + 1 + FILE_W, '-'));
 
     for (const auto& e : table.entries)
     {
-      fmt::print(file, "0x{:08X} {:<99} {:>10} {:>14} {:<45}\n", e.addr, TruncateSymbol(e.name),
+      fmt::print(out, "0x{:08X} {:<99} {:>10} {:>14} {:<45}\n", e.addr, TruncateSymbol(e.name),
                  e.n_frames, e.total_heat, e.file);
     }
 
@@ -258,39 +331,63 @@ void FunctionWatch::Dump(const Core::System& system)
     {
       std::size_t funcs = 0;
       std::size_t heat = 0;
+      std::vector<const Entry*> entries;
     };
 
     std::unordered_map<std::string, FileStats> per_file;
-
     for (const auto& e : table.entries)
     {
       auto& fs = per_file[e.file];
       fs.funcs++;
       fs.heat += e.total_heat;
+      fs.entries.push_back(&e);
     }
 
-    std::vector<std::pair<std::string, FileStats>> files;
-    files.reserve(per_file.size());
-
-    for (auto& it : per_file)
-      files.push_back(it);
+    std::vector<std::pair<std::string, FileStats*>> files;
+    for (auto& [fname, fs] : per_file)
+      files.emplace_back(fname, &fs);
 
     std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) {
-      if (a.second.heat != b.second.heat)
-        return a.second.heat > b.second.heat;
-
+      if (a.second->heat != b.second->heat)
+        return a.second->heat > b.second->heat;
       return a.first < b.first;
     });
 
-    fmt::print(file, "\n-- File priority (by total_heat) -- file count: {}\n", files.size());
+    fmt::print(out, "\n-- File priority (by total_heat) -- file count: {}\n", files.size());
 
-    for (const auto& [fname, stats] : files)
+    for (const auto& [fname, fs] : files)
     {
-      fmt::print(file, "{:<45} funcs:{:>5}  heat:{:>10}\n", fname, stats.funcs, stats.heat);
+      fmt::print(out, "\n  {:<45} funcs:{:>5}  heat:{:>10}\n", fname, fs->funcs, fs->heat);
+
+      // ----------------------------
+      // CORRECT fuzzy sorting
+      // ----------------------------
+      std::sort(fs->entries.begin(), fs->entries.end(), [&](const Entry* a, const Entry* b) {
+        if (SORT_UNDER_FILE_BY_FUZZY)
+        {
+          const double fa = a->has_fuzzy ? a->fuzzy : 0.0;
+          const double fb = b->has_fuzzy ? b->fuzzy : 0.0;
+
+          if (fa != fb)
+            return fa > fb;  // HIGHER fuzzy first
+        }
+
+        if (a->total_heat != b->total_heat)
+          return a->total_heat > b->total_heat;
+
+        return a->name < b->name;
+      });
+
+      for (const Entry* e : fs->entries)
+      {
+        fmt::print(out, "    0x{:08X} {:<97} heat:{:>8}  fuzzy:{}\n", e->addr,
+                   TruncateSymbol(e->name), e->total_heat,
+                   e->has_fuzzy ? fmt::format("{:.2f}%", e->fuzzy) : "N/A");
+      }
     }
   }
 
-  std::fclose(file);
+  std::fclose(out);
 }
 
 bool FunctionWatch::IsMagma(u32 addr) {
