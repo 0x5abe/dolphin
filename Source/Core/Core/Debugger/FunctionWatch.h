@@ -43,15 +43,6 @@ public:
 private:
     void OnFrameEnd(const Core::System& system);
     std::vector<FileMapping> LoadSplits(const std::string& path);
-    const std::string* FindFileForAddress(addr_t addr, const std::vector<FileMapping>& mappings)
-    {
-      for (const auto& m : mappings)
-      {
-        if (addr >= m.text.start && addr < m.text.end)
-          return &m.file;
-      }
-      return nullptr;
-    }
 
     // these are memory addresses of functions that have been identified as running too often, and are therefore ignored in fwfw analysis
     std::unordered_set<u32> m_magma_addrs;

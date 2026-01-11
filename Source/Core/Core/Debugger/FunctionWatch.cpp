@@ -8,11 +8,9 @@
 #include "Core/Core.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PPCSymbolDB.h"
-#include "VideoCommon/VideoEvents.h"
 #include "VideoCommon/Present.h"
-#include "Common/Demangler.h"
+#include "VideoCommon/VideoEvents.h"
 
-// #include <iostream>
 #include <fstream>
 #include <regex>
 
@@ -24,7 +22,8 @@ size_t FunctionWatch::n_tracing = 0;
 void FunctionWatch::Enable(const Core::System& system)
 {
   NOTICE_LOG_FMT(POWERPC, "FunctionWatch::Enable");
-  m_VI_end_field_event = VIEndFieldEvent::Register([this,&system] { OnFrameEnd(system); }, "FunctionWatch");
+  m_VI_end_field_event =
+      VIEndFieldEvent::Register([this, &system] { OnFrameEnd(system); }, "FunctionWatch");
 }
 
 void FunctionWatch::Disable()
@@ -39,7 +38,6 @@ static std::string TruncateSymbol(const std::string& s)
 {
   if (s.size() <= MAX_SYMBOL_WIDTH)
     return s;
-
   return s.substr(0, MAX_SYMBOL_WIDTH - 3) + "...";
 }
 
@@ -47,12 +45,7 @@ static void SanitizeString(std::string& s)
 {
   s.erase(std::remove_if(s.begin(), s.end(),
                          [](unsigned char c) {
-                           // Remove characters that can break TSV / C IO
-                           return c == '\0'     // NUL (kills output)
-                                  || c == '\r'  // carriage return
-                                  || c == '\n'  // newline inside fields
-                                  || c == '\t'  // tabs break alignment
-                                  || c < 0x20;  // other ASCII control chars
+                           return c == '\0' || c == '\r' || c == '\n' || c == '\t' || c < 0x20;
                          }),
           s.end());
 }
@@ -64,29 +57,29 @@ std::vector<FunctionWatch::FileMapping> FunctionWatch::LoadSplits(const std::str
     throw std::runtime_error("Failed to open splits.txt");
 
   std::vector<FileMapping> result;
-
   std::string line;
   std::string current_file;
 
-  std::regex file_re(R"(^(.+\.cpp):)");
-  std::regex text_re(R"(\.text\s+start:0x([0-9A-Fa-f]+)\s+end:0x([0-9A-Fa-f]+))");
+  const std::regex file_re(R"(^\s*([^:]+):\s*$)");
+  const std::regex text_re(R"(^\s*\.text\s+start:0x([0-9A-Fa-f]+)\s+end:0x([0-9A-Fa-f]+))");
 
   while (std::getline(in, line))
   {
     std::smatch m;
 
-    if (std::regex_search(line, m, file_re))
+    if (std::regex_match(line, m, file_re))
     {
-      current_file = m[1];
+      current_file = m[1].str();
       SanitizeString(current_file);
       continue;
     }
 
     if (!current_file.empty() && std::regex_search(line, m, text_re))
     {
-      addr_t start = std::stoul(m[1], nullptr, 16);
-      addr_t end = std::stoul(m[2], nullptr, 16);
-
+      const addr_t start = std::stoul(m[1].str(), nullptr, 16);
+      const addr_t end = std::stoul(m[2].str(), nullptr, 16);
+      if (start >= end)
+        continue;
       result.push_back({current_file, {start, end}});
     }
   }
@@ -104,20 +97,22 @@ constexpr u32 LIBGC_END = 0x80220548;
 constexpr u32 ENGINE_BEGIN = 0x80220548;
 constexpr u32 ENGINE_END = 0x803125F4;
 
-
 struct FuzzyInfo
 {
-  bool has_value;  // true if fuzzy_match_percent exists
-  double percent;  // valid only if has_value == true
+  bool has_value = false;
+  double percent = 0.0;
+  std::string demangled_name;
 };
 
-static std::unordered_map<u32, FuzzyInfo> LoadFuzzyReport(const std::string& path)
+using FuzzyMap = std::unordered_map<std::string, FuzzyInfo>;
+
+static FuzzyMap LoadFuzzyReport(const std::string& path)
 {
-  std::unordered_map<u32, FuzzyInfo> out;
+  FuzzyMap out;
 
   std::ifstream in(path);
   if (!in)
-    return out;  // missing report.json => treat all as "not attempted"
+    return out;
 
   picojson::value v;
   in >> v;
@@ -146,26 +141,29 @@ static std::unordered_map<u32, FuzzyInfo> LoadFuzzyReport(const std::string& pat
 
       const auto& fn = fn_val.get<picojson::object>();
 
-      // --- virtual_address (required) ---
-      auto meta_it = fn.find("metadata");
-      if (meta_it == fn.end() || !meta_it->second.is<picojson::object>())
+      auto name_it = fn.find("name");
+      if (name_it == fn.end() || !name_it->second.is<std::string>())
         continue;
 
-      const auto& meta = meta_it->second.get<picojson::object>();
-      auto va_it = meta.find("virtual_address");
-      if (va_it == meta.end())
+      std::string mangled = name_it->second.get<std::string>();
+      SanitizeString(mangled);
+      if (mangled.empty())
         continue;
 
-      u32 addr = 0;
-      if (va_it->second.is<std::string>())
-        addr = static_cast<u32>(std::stoul(va_it->second.get<std::string>(), nullptr, 10));
-      else if (va_it->second.is<double>())
-        addr = static_cast<u32>(va_it->second.get<double>());
-      else
-        continue;
-
-      // --- fuzzy_match_percent (optional) ---
       FuzzyInfo fi{};
+
+      auto meta_it = fn.find("metadata");
+      if (meta_it != fn.end() && meta_it->second.is<picojson::object>())
+      {
+        const auto& meta = meta_it->second.get<picojson::object>();
+        auto dem_it = meta.find("demangled_name");
+        if (dem_it != meta.end() && dem_it->second.is<std::string>())
+        {
+          fi.demangled_name = dem_it->second.get<std::string>();
+          SanitizeString(fi.demangled_name);
+        }
+      }
+
       auto fuzzy_it = fn.find("fuzzy_match_percent");
       if (fuzzy_it != fn.end() && fuzzy_it->second.is<double>())
       {
@@ -173,116 +171,141 @@ static std::unordered_map<u32, FuzzyInfo> LoadFuzzyReport(const std::string& pat
         fi.percent = fuzzy_it->second.get<double>();
       }
 
-      out[addr] = fi;
+      auto it = out.find(mangled);
+      if (it == out.end())
+      {
+        out.emplace(mangled, fi);
+      }
+      else
+      {
+        auto& cur = it->second;
+        if (cur.demangled_name.empty() && !fi.demangled_name.empty())
+          cur.demangled_name = fi.demangled_name;
+
+        if (!cur.has_value && fi.has_value)
+        {
+          cur.has_value = true;
+          cur.percent = fi.percent;
+        }
+        else if (cur.has_value && fi.has_value && fi.percent > cur.percent)
+        {
+          cur.percent = fi.percent;
+        }
+      }
     }
   }
 
   return out;
 }
 
-static bool ShouldShowFunction(u32 addr, const std::unordered_map<u32, FuzzyInfo>& fuzzy,
+static bool ShouldShowFunction(const std::string& mangled_name, const FuzzyMap& fuzzy,
                                double threshold)
 {
-  // threshold == 0 => show everything
   if (threshold <= 0.0)
     return true;
 
-  auto it = fuzzy.find(addr);
-
-  // No fuzzy_match_percent => NOT attempted => ALWAYS show
+  auto it = fuzzy.find(mangled_name);
   if (it == fuzzy.end() || !it->second.has_value)
     return true;
 
-  // Has fuzzy_match_percent => show ONLY if below threshold
   return it->second.percent < threshold;
+}
+
+static const char* ClassifyCategory(u32 addr, const std::string& file)
+{
+  if (file.rfind("Rat/", 0) == 0 || file.rfind("Rat\\", 0) == 0)
+    return "Rat";
+  if (file.rfind("Engine/", 0) == 0 || file.rfind("Engine\\", 0) == 0)
+    return "Engine";
+  if (file.rfind("LibGC/", 0) == 0 || file.rfind("LibGC\\", 0) == 0)
+    return "LibGC";
+  if (file.rfind("SB/Game/", 0) == 0 || file.rfind("SB/Core/x/", 0) == 0 ||
+      file.rfind("SB/Core/gc/", 0) == 0)
+    return "Game";
+  if (file.rfind("bink/", 0) == 0)
+    return "Bink";
+  if (file.rfind("rwsdk/", 0) == 0)
+    return "Renderware";
+  return "Other";
 }
 
 void FunctionWatch::Dump(const Core::System& system)
 {
   PPCSymbolDB& symbol_db = system.GetPPCSymbolDB();
 
-  // ----------------------------
-  // CONFIG
-  // ----------------------------
-  const double FUZZY_THRESHOLD = 95.0;         // 0 = show everything
-  const bool SORT_UNDER_FILE_BY_FUZZY = false;  // toggle here
+  const double FUZZY_THRESHOLD = 100.0;
+  const bool SORT_UNDER_FILE_BY_FUZZY = true;
 
-  // ----------------------------
-  // Load fuzzy report
-  // ----------------------------
-  const auto fuzzy = LoadFuzzyReport(".\\report.json");
+  const FuzzyMap fuzzy = LoadFuzzyReport(".\\report.json");
 
   struct Entry
   {
     addr_t addr;
     std::string name;
+    std::string mangled;
     std::string file;
     std::size_t n_frames;
     std::size_t total_heat;
     bool has_fuzzy;
-    double fuzzy;  // valid iff has_fuzzy
+    double fuzzy;
   };
 
-  struct Table
-  {
-    const char* title;
-    addr_t begin;
-    addr_t end;
-    std::vector<Entry> entries;
-  };
-
-  Table tables[] = {
-      {"Engine", ENGINE_BEGIN, ENGINE_END, {}},
-      {"LibGC", LIBGC_BEGIN, LIBGC_END, {}},
-      {"Rat", RAT_BEGIN, RAT_END, {}},
-  };
-
+  std::unordered_map<std::string, std::vector<Entry>> tables;
   auto mappings = LoadSplits(".\\splits.txt");
 
-  // ----------------------------
-  // Collect + filter
-  // ----------------------------
-  for (const auto& [addr, frameMap] : m_heatmap)
+  for (const auto& kv : m_heatmap)
   {
+    const addr_t addr = kv.first;
+    const auto& frameMap = kv.second;
+
     auto* symbol = symbol_db.GetSymbolFromAddr(addr);
     if (!symbol)
       continue;
 
-    if (!ShouldShowFunction(addr, fuzzy, FUZZY_THRESHOLD))
+    const std::string mangled = symbol->function_name;
+
+    if (!ShouldShowFunction(mangled, fuzzy, FUZZY_THRESHOLD))
       continue;
 
-    const std::string* cpp_file = FindFileForAddress(addr, mappings);
-
-    std::string demangled = demangler::Demangler::Demangle(symbol->function_name);
-    if (demangled == "int::")
-      demangled = symbol->function_name;
-
-    bool has_fuzzy = false;
-    double fuzzy_val = 0.0;
-    if (auto it = fuzzy.find(addr); it != fuzzy.end() && it->second.has_value)
+    const std::string* cpp_file = nullptr;
+    for (const auto& m : mappings)
     {
-      has_fuzzy = true;
-      fuzzy_val = it->second.percent;
-    }
-
-    Entry e{
-        addr,
-        demangled,
-        cpp_file ? *cpp_file : "<unknown>",
-        frameMap.size(),
-        static_cast<std::size_t>(symbol->num_calls),
-        has_fuzzy,
-        fuzzy_val,
-    };
-
-    for (auto& table : tables)
-    {
-      if (addr >= table.begin && addr < table.end)
+      if (addr >= m.text.start && addr < m.text.end)
       {
-        table.entries.push_back(std::move(e));
+        cpp_file = &m.file;
         break;
       }
     }
+    if (!cpp_file)
+      continue;
+
+    const std::string& file = *cpp_file;
+
+    const char* category = ClassifyCategory(addr, file);
+    if (std::strcmp(category, "Other") == 0)
+      continue;
+
+    std::string name = mangled;
+    bool has_fuzzy = false;
+    double fuzzy_val = 0.0;
+
+    auto fit = fuzzy.find(mangled);
+    if (fit != fuzzy.end())
+    {
+      if (!fit->second.demangled_name.empty())
+        name = fit->second.demangled_name;
+      if (fit->second.has_value)
+      {
+        has_fuzzy = true;
+        fuzzy_val = fit->second.percent;
+      }
+    }
+
+    SanitizeString(name);
+
+    tables[category].push_back(Entry{addr, name, mangled, file, frameMap.size(),
+                                     static_cast<std::size_t>(symbol->num_calls), has_fuzzy,
+                                     fuzzy_val});
   }
 
   FILE* out = std::fopen(".\\funcs.tsv", "w");
@@ -298,30 +321,25 @@ void FunctionWatch::Dump(const Core::System& system)
   constexpr int HEAT_W = 14;
   constexpr int FILE_W = 45;
 
-  // ----------------------------
-  // Emit
-  // ----------------------------
-  for (auto& table : tables)
+  for (auto& [category, entries] : tables)
   {
-    if (table.entries.empty())
+    if (entries.empty())
       continue;
 
-    std::sort(table.entries.begin(), table.entries.end(), [](const Entry& a, const Entry& b) {
+    std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
       if (a.total_heat != b.total_heat)
         return a.total_heat > b.total_heat;
       return a.name < b.name;
     });
 
-    fmt::print(out, "\n{} - {} total functions\n", table.title, table.entries.size());
+    fmt::print(out, "\n{} - {} total functions\n", category, entries.size());
     fmt::print(out, "{}\n", std::string(80, '='));
-
     fmt::print(out, "{:<12} {:<99} {:>10} {:>14} {:<45}\n", "addr", "func_name", "n_frames",
                "total_heat", "file");
-
     fmt::print(out, "{}\n",
                std::string(ADDR_W + 1 + NAME_W + 1 + FRAMES_W + 1 + HEAT_W + 1 + FILE_W, '-'));
 
-    for (const auto& e : table.entries)
+    for (const auto& e : entries)
     {
       fmt::print(out, "0x{:08X} {:<99} {:>10} {:>14} {:<45}\n", e.addr, TruncateSymbol(e.name),
                  e.n_frames, e.total_heat, e.file);
@@ -335,7 +353,7 @@ void FunctionWatch::Dump(const Core::System& system)
     };
 
     std::unordered_map<std::string, FileStats> per_file;
-    for (const auto& e : table.entries)
+    for (const auto& e : entries)
     {
       auto& fs = per_file[e.file];
       fs.funcs++;
@@ -359,22 +377,16 @@ void FunctionWatch::Dump(const Core::System& system)
     {
       fmt::print(out, "\n  {:<45} funcs:{:>5}  heat:{:>10}\n", fname, fs->funcs, fs->heat);
 
-      // ----------------------------
-      // CORRECT fuzzy sorting
-      // ----------------------------
       std::sort(fs->entries.begin(), fs->entries.end(), [&](const Entry* a, const Entry* b) {
         if (SORT_UNDER_FILE_BY_FUZZY)
         {
           const double fa = a->has_fuzzy ? a->fuzzy : 0.0;
           const double fb = b->has_fuzzy ? b->fuzzy : 0.0;
-
           if (fa != fb)
-            return fa > fb;  // HIGHER fuzzy first
+            return fa > fb;
         }
-
         if (a->total_heat != b->total_heat)
           return a->total_heat > b->total_heat;
-
         return a->name < b->name;
       });
 
@@ -390,7 +402,8 @@ void FunctionWatch::Dump(const Core::System& system)
   std::fclose(out);
 }
 
-bool FunctionWatch::IsMagma(u32 addr) {
+bool FunctionWatch::IsMagma(u32 addr)
+{
   return m_magma_addrs.count(addr) != 0;
 }
 
@@ -399,43 +412,29 @@ void FunctionWatch::OnFrameEnd(const Core::System& system)
   auto& symDB = system.GetPPCSymbolDB();
   size_t i = 0;
   size_t magmas_ignored = 0;
+
   symDB.ForEachSymbolWithMutation([&](Common::Symbol& symbol) {
-    if (!(symbol.address >= RAT_BEGIN && symbol.address < RAT_END) &&    // ! Rat
-        !(symbol.address >= LIBGC_BEGIN && symbol.address < LIBGC_END) && // ! LibGC
-        !(symbol.address >= ENGINE_BEGIN && symbol.address < ENGINE_END))   // ! Engine
-    {
-      return;
-    }
     if (symbol.num_calls_this_frame != 0)
     {
       m_heatmap[symbol.address][g_presenter->FrameCount()] = symbol.num_calls_this_frame;
       symbol.num_calls += symbol.num_calls_this_frame;
 
-
-      // cancel tracing for magma functions
-      // wehre a magma function is a function that has a high heat
-      // where heat is amount of hits
-      // where a hit is an execution
-      // so, a magma funciton is a function that is executed often
-      // so, this block cancels tracing fro functions that are executed often.
-      // TODO: make this condition customizable in the to-be-created Function Watch Dialog UI (like
-      // Branch Watch Dialog)
-      // TODO: keep track of magma fns and show the user in the FWFW dialog so they can choose to
-      // trace them anyway, or manually mark other fns as magma
       if (symbol.num_calls > 1'000'000 || symbol.num_calls_this_frame > 1'000)
       {
         m_magma_addrs.insert(symbol.address);
         magmas_ignored++;
       }
       symbol.num_calls_this_frame = 0;
-
       i++;
     }
   });
-  NOTICE_LOG_FMT(POWERPC, "{}/{} fns ({} magma) hit frame {}", i, n_tracing, magmas_ignored, g_presenter->FrameCount());
+
+  NOTICE_LOG_FMT(POWERPC, "{}/{} fns ({} magma) hit frame {}", i, n_tracing, magmas_ignored,
+                 g_presenter->FrameCount());
 }
 
-size_t FunctionWatch::MagmaCount() {
+size_t FunctionWatch::MagmaCount()
+{
   return m_magma_addrs.size();
 }
 
