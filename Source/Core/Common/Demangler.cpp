@@ -3,6 +3,8 @@
 #include <cctype>
 #include <sstream>
 
+// Credit to Arookas - https://github.com/intns/mapdas/blob/main/Helpers/Demangler.cs
+
 namespace demangler
 {
 
@@ -427,4 +429,4 @@ std::string Demangler::Demangle(const std::string& symbol)
   return output;
 }
 
-}  // namespace arookas
+}  // namespace demangler

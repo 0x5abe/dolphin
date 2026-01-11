@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+// Credit to Arookas - https://github.com/intns/mapdas/blob/main/Helpers/Demangler.cs
+
 namespace demangler
 {
 
